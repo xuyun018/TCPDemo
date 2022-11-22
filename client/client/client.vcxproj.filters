@@ -18,12 +18,12 @@
     <ClCompile Include="client.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\XYSocket.cpp">
+    <ClCompile Include="..\..\kakapo.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="..\..\XYSocket.h">
+    <ClInclude Include="..\..\kakapo.h">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>

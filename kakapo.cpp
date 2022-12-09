@@ -29,6 +29,8 @@ struct kakapo_thread_parameter
 	struct kakapo *pkkp;
 
 	struct kkp_box *pbox;
+
+	HANDLE hevent;
 };
 //---------------------------------------------------------------------------
 DWORD WINAPI kkp_datagram_proc(LPVOID parameter);
@@ -126,8 +128,8 @@ int kkp_launch_thread(struct kakapo *pkkp, uint8_t index, uint8_t capacity)
 		pbox = (struct kkp_box *)MALLOC(sizeof(struct kkp_box) + sizeof(struct kkp_ctx)* capacity);
 		if (pbox)
 		{
-			pbox->hevent = CreateEventW(NULL, TRUE, FALSE, NULL);
-			if (pbox->hevent)
+			ptp->hevent = CreateEventW(NULL, TRUE, FALSE, NULL);
+			if (ptp->hevent)
 			{
 				ptp->pkkp = pkkp;
 				ptp->pbox = pbox;
@@ -137,6 +139,8 @@ int kkp_launch_thread(struct kakapo *pkkp, uint8_t index, uint8_t capacity)
 				pbox->count = 0;
 
 				InitializeCriticalSection(&pbox->cs);
+
+				pbox->hevent = CreateEventW(NULL, TRUE, FALSE, NULL);
 
 				switch (index)
 				{
@@ -161,7 +165,7 @@ int kkp_launch_thread(struct kakapo *pkkp, uint8_t index, uint8_t capacity)
 				pbox->hthread = CreateThread(NULL, 0, startaddress, (LPVOID)ptp, 0, NULL);
 				if (pbox->hthread)
 				{
-					WaitForSingleObject(pbox->hevent, INFINITE);
+					WaitForSingleObject(ptp->hevent, INFINITE);
 
 					pkkp->boxes[index] = pbox;
 				}
@@ -174,6 +178,8 @@ int kkp_launch_thread(struct kakapo *pkkp, uint8_t index, uint8_t capacity)
 					FREE((void *)pbox);
 					pbox = NULL;
 				}
+
+				CloseHandle(ptp->hevent);
 			}
 		}
 	}
@@ -321,8 +327,7 @@ DWORD WINAPI kkp_datagram_proc(LPVOID parameter)
 	//
 
 	//
-	SetEvent(pbox->hevent);
-	ResetEvent(pbox->hevent);
+	SetEvent(ptp->hevent);
 	//
 
 	procedure = pkkp->procedure;
@@ -508,8 +513,7 @@ DWORD WINAPI kkp_listen_proc(LPVOID parameter)
 	//
 
 	//
-	SetEvent(pbox->hevent);
-	ResetEvent(pbox->hevent);
+	SetEvent(ptp->hevent);
 	//
 
 	procedure = pkkp->procedure;
@@ -696,8 +700,7 @@ DWORD WINAPI kkp_connect_proc(LPVOID parameter)
 	//
 
 	//
-	SetEvent(pbox->hevent);
-	ResetEvent(pbox->hevent);
+	SetEvent(ptp->hevent);
 	//
 
 	procedure = pkkp->procedure;
@@ -887,8 +890,7 @@ DWORD WINAPI kkp_receive_proc(LPVOID parameter)
 	//
 
 	//
-	SetEvent(pbox->hevent);
-	ResetEvent(pbox->hevent);
+	SetEvent(ptp->hevent);
 	//
 
 	procedure = pkkp->procedure;

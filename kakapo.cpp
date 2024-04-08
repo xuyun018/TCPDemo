@@ -14,15 +14,14 @@ typedef struct win_fd_set {
 	} while (0, 0)
 //---------------------------------------------------------------------------
 #ifndef XYTCP_NODELAY
-#define XYTCP_NODELAY
+//#define XYTCP_NODELAY
 #endif
 
 #define KAKAPO_STATE_CONNECTED												0x01
 #define KAKAPO_STATE_DISCONNECTED											0x02
 #define KAKAPO_STATE_UNUSED													0x04
 #define KAKAPO_STATE_SEND													0x08
-// 调用者关闭
-#define KAKAPO_STATE_CLOSE													0x10
+#define KAKAPO_STATE_ASSIGN													0x10
 //---------------------------------------------------------------------------
 struct kakapo_thread_parameter
 {
@@ -250,6 +249,8 @@ unsigned int kkp_fds_load(struct kakapo *pkkp, struct kkp_box *pbox, void **ctxs
 
 			fd = pctx->fd;
 
+			pctx->states |= KAKAPO_STATE_ASSIGN;
+
 			*maximum = fd > (*maximum) ? fd : (*maximum);
 
 			XYFD_SET(fd, fds0, pbox->capacity);
@@ -316,6 +317,7 @@ DWORD WINAPI kkp_datagram_proc(LPVOID parameter)
 	int errorcode;
 	int value;
 	unsigned int i;
+	unsigned int j;
 	int flag0;
 	int flag1;
 	uint16_t count;
@@ -357,100 +359,117 @@ DWORD WINAPI kkp_datagram_proc(LPVOID parameter)
 				case 0:
 				case SOCKET_ERROR:
 				default:
-					while (i)
+					do
 					{
-						i--;
-
-						pctx = (struct kkp_ctx *)ctxs[i];
-
-						fd = pctx->fd;
-						type = pctx->type;
-
-						flag1 = 0;
-
-						errorcode = 0;
-
-						if (value == 0 || value != SOCKET_ERROR && XYFD_ISSET(fd, (fd_set *)pfds0))
+						j = 0;
+						i = count;
+						while (i)
 						{
-							do
+							i--;
+
+							pctx = (struct kkp_ctx *)ctxs[i];
+							if (pctx->states & KAKAPO_STATE_ASSIGN)
 							{
-								flag0 = 0;
+								fd = pctx->fd;
+								type = pctx->type;
 
-								length = 0;
-								switch (type)
+								flag1 = 0;
+
+								errorcode = 0;
+
+								if (value == 0 || value != SOCKET_ERROR && XYFD_ISSET(fd, (fd_set *)pfds0))
 								{
-								case KAKAPO_TYPE_RAW:
-									sasize = 0;
+									flag0 = 0;
 
-									length = recv(fd, buffer, sizeof(buffer), 0);
-									break;
-								case KAKAPO_TYPE_UDP:
-									procedure(pkkp, NULL, (void *)pctx, fd, type, KAKAPO_RECV, (void *)&sai6, &sasize, NULL, 0);
-
-									length = recvfrom(fd, buffer, sizeof(buffer), 0, (struct sockaddr *)&sai6, &sasize);
-									break;
-								default:
-									break;
-								}
-
-								if (length > 0)
-								{
-									errorcode = procedure(pkkp, NULL, (void *)pctx, fd, type, KAKAPO_RECV, (SOCKADDR *)&sai6, &sasize, buffer, length);
-
-									if (errorcode == 0)
+									length = 0;
+									switch (type)
 									{
-										flag0 = 1;
+									case KAKAPO_TYPE_RAW:
+										sasize = 0;
 
-										flag1 = 1;
+										length = recv(fd, buffer, sizeof(buffer), 0);
+										break;
+									case KAKAPO_TYPE_UDP:
+										procedure(pkkp, NULL, (void *)pctx, fd, type, KAKAPO_RECV, (void *)&sai6, &sasize, NULL, 0);
+
+										length = recvfrom(fd, buffer, sizeof(buffer), 0, (struct sockaddr *)&sai6, &sasize);
+										break;
+									default:
+										break;
+									}
+
+									if (length > 0)
+									{
+										errorcode = procedure(pkkp, NULL, (void *)pctx, fd, type, KAKAPO_RECV, (SOCKADDR *)&sai6, &sasize, buffer, length);
+
+										if (errorcode == 0)
+										{
+											flag0 = 1;
+
+											flag1 = 1;
+										}
+									}
+									else
+									{
+										if (length == 0)
+										{
+											errorcode = KAKAPO_ERROR_FAILED;
+										}
+										else
+										{
+											// length == SOCKET_ERROR
+											errorcode = WSAGetLastError();
+											if (errorcode == WSAEWOULDBLOCK || errorcode == WSAEINTR)
+											{
+												errorcode = 0;
+											}
+										}
+									}
+
+									if (flag0)
+									{
+										j++;
+									}
+									else
+									{
+										pctx->states ^= KAKAPO_STATE_ASSIGN;
 									}
 								}
 								else
 								{
-									if (length == 0)
+									if (XYFD_ISSET(fd, (fd_set *)pfds2))
 									{
 										errorcode = KAKAPO_ERROR_FAILED;
 									}
 									else
 									{
-										// length == SOCKET_ERROR
-										errorcode = WSAGetLastError();
-										if (errorcode == WSAEWOULDBLOCK || errorcode == WSAEINTR)
+										pctx->states ^= KAKAPO_STATE_ASSIGN;
+									}
+								}
+
+								if (errorcode == 0)
+								{
+									if (value == 0)
+									{
+										if (flag1 == 0)
 										{
-											errorcode = 0;
+											errorcode = procedure(pkkp, NULL, (void *)pctx, fd, type, KAKAPO_TIMEOUT, NULL, NULL, NULL, 0);
 										}
 									}
 								}
-							} while (flag0);
-						}
-						else
-						{
-							if (XYFD_ISSET(fd, (fd_set *)pfds2))
-							{
-								errorcode = KAKAPO_ERROR_FAILED;
-							}
-						}
 
-						if (errorcode == 0)
-						{
-							if (value == 0)
-							{
-								if (flag1 == 0)
+								if (errorcode)
 								{
-									errorcode = procedure(pkkp, NULL, (void *)pctx, fd, type, KAKAPO_TIMEOUT, NULL, NULL, NULL, 0);
+									procedure(pkkp, NULL, (void *)pctx, fd, type, KAKAPO_CLOSE, NULL, NULL, NULL, errorcode);
+
+									kkp_remove(pbox, pctx, NULL);
+									closesocket(fd);
+
+									count--;
 								}
 							}
 						}
-
-						if (errorcode)
-						{
-							procedure(pkkp, NULL, (void *)pctx, fd, type, KAKAPO_CLOSE, NULL, NULL, NULL, errorcode);
-
-							kkp_remove(pbox, pctx, NULL);
-							closesocket(fd);
-
-							count--;
-						}
-					}
+					} while (j);
 					break;
 				}
 			}
@@ -504,6 +523,7 @@ DWORD WINAPI kkp_listen_proc(LPVOID parameter)
 	int value;
 	unsigned int seconds;
 	unsigned int i;
+	unsigned int j;
 	int flag = 1;
 	uint8_t type;
 
@@ -569,76 +589,98 @@ DWORD WINAPI kkp_listen_proc(LPVOID parameter)
 					break;
 				case SOCKET_ERROR:
 				default:
-					while (i)
+					do
 					{
-						i--;
-
-						pctx = (struct kkp_ctx *)ctxs[i];
-
-						fd0 = pctx->fd;
-
-						if (value != SOCKET_ERROR && XYFD_ISSET(fd0, (fd_set *)pfds0))
+						j = 0;
+						i = count;
+						while (i)
 						{
-							// 这里是server
-							type = KAKAPO_TYPE_TCP1;
+							i--;
 
-							sasize = 0;
-
-							procedure(pkkp, NULL, (void *)pctx, fd0, type, KAKAPO_CONNECT, (void *)&sai6, &sasize, NULL, KAKAPO_ERROR_ACCEPT);
-
-							fd1 = accept(fd0, (struct sockaddr *)&sai6, &sasize);
-							if (fd1 != INVALID_SOCKET)
+							pctx = (struct kkp_ctx *)ctxs[i];
+							if (pctx->states & KAKAPO_STATE_ASSIGN)
 							{
-								ctx.context = pctx->context;
-								ctx.fd = fd1;
-								ctx.type = type;
+								fd0 = pctx->fd;
 
-								pointer = NULL;
-								errorcode = procedure(pkkp, &pointer, (void *)&ctx, fd1, type, KAKAPO_CONNECT, (void *)&sai6, &sasize, NULL, KAKAPO_ERROR_ACCEPTED);
-
-								u_long argp = 1;
-								if (errorcode || ioctlsocket(fd1, FIONBIO, (u_long *)&argp) != 0 || 
-									(pbox1 = pkkp->boxes[KAKAPO_THREAD_SERVER]) == NULL || 
-									!kkp_add(pbox1, pointer, ctx.context, ctx.fd, ctx.type))
+								if (value != SOCKET_ERROR && XYFD_ISSET(fd0, (fd_set *)pfds0))
 								{
-									if (errorcode == 0)
+									int flag0 = 0;
+
+									// 这里是server
+									type = KAKAPO_TYPE_TCP1;
+
+									sasize = 0;
+
+									procedure(pkkp, NULL, (void *)pctx, fd0, type, KAKAPO_CONNECT, (void *)&sai6, &sasize, NULL, KAKAPO_ERROR_ACCEPT);
+
+									fd1 = accept(fd0, (struct sockaddr *)&sai6, &sasize);
+									if (fd1 != INVALID_SOCKET)
 									{
-										// 这个错误有点特殊,是已经触发连接事件成功之后的,需要注意
-										errorcode = KAKAPO_ERROR_OVERFLOW;
+										ctx.context = pctx->context;
+										ctx.fd = fd1;
+										ctx.type = type;
+
+										pointer = NULL;
+										errorcode = procedure(pkkp, &pointer, (void *)&ctx, fd1, type, KAKAPO_CONNECT, (void *)&sai6, &sasize, NULL, KAKAPO_ERROR_ACCEPTED);
+
+										u_long argp = 1;
+										if (errorcode || ioctlsocket(fd1, FIONBIO, (u_long *)&argp) != 0 ||
+											(pbox1 = pkkp->boxes[KAKAPO_THREAD_SERVER]) == NULL ||
+											!kkp_add(pbox1, pointer, ctx.context, ctx.fd, ctx.type))
+										{
+											if (errorcode == 0)
+											{
+												// 这个错误有点特殊,是已经触发连接事件成功之后的,需要注意
+												errorcode = KAKAPO_ERROR_OVERFLOW;
+											}
+
+											errorcode = procedure(pkkp, &pointer, (void *)&ctx, fd1, type, KAKAPO_CLOSE, NULL, NULL, NULL, errorcode);
+											closesocket(fd1);
+										}
+										else
+										{
+											flag0 = 1;
+										}
+									}
+									else
+									{
+										errorcode = KAKAPO_ERROR_FAILED;
 									}
 
-									errorcode = procedure(pkkp, &pointer, (void *)&ctx, fd1, type, KAKAPO_CLOSE, NULL, NULL, NULL, errorcode);
-									closesocket(fd1);
+									if (errorcode != 0)
+									{
+										// 这里是通知而不是关闭
+										procedure(pkkp, NULL, (void *)pctx, fd0, type, KAKAPO_CONNECT, NULL, NULL, NULL, errorcode);
+									}
+
+									if (flag0)
+									{
+										j++;
+									}
+									else
+									{
+										pctx->states ^= KAKAPO_STATE_ASSIGN;
+									}
+								}
+								else
+								{
+									if (XYFD_ISSET(fd0, (fd_set *)pfds2))
+									{
+										//
+										type = pctx->type;
+
+										procedure(pkkp, NULL, (void *)pctx, fd0, type, KAKAPO_CLOSE, NULL, NULL, NULL, KAKAPO_ERROR_FAILED);
+										//
+
+										kkp_remove(pbox, pctx, NULL);
+										closesocket(fd0);
+
+										count--;
+									}
 								}
 							}
-							else
-							{
-								errorcode = KAKAPO_ERROR_FAILED;
-							}
-
-							if (errorcode != 0)
-							{
-								// 这里是通知而不是关闭
-								procedure(pkkp, NULL, (void *)pctx, fd0, type, KAKAPO_CONNECT, NULL, NULL, NULL, errorcode);
-							}
 						}
-						else
-						{
-							if (XYFD_ISSET(fd0, (fd_set *)pfds2))
-							{
-								//
-								type = pctx->type;
-
-								procedure(pkkp, NULL, (void *)pctx, fd0, type, KAKAPO_CLOSE, NULL, NULL, NULL, KAKAPO_ERROR_FAILED);
-								//
-
-								kkp_remove(pbox, pctx, NULL);
-								closesocket(fd0);
-
-								count--;
-							}
-						}
-					}
+					} while (j);
 					break;
 				}
 			}
@@ -879,6 +921,7 @@ DWORD WINAPI kkp_receive_proc(LPVOID parameter)
 	int errorcode;
 	int value;
 	unsigned int i;
+	unsigned int j;
 	int flag0;
 	int flag1;
 	uint8_t type;
@@ -924,98 +967,115 @@ DWORD WINAPI kkp_receive_proc(LPVOID parameter)
 				case 0:
 				case SOCKET_ERROR:
 				default:
-					while (i)
+					do
 					{
-						i--;
-
-						pctx = (struct kkp_ctx *)ctxs[i];
-
-						fd = pctx->fd;
-						type = pctx->type;
-
-						flag1 = 0;
-
-						errorcode = 0;
-
-						// 超时也要接收数据, 没有想明白
-						if (value == 0 || value != SOCKET_ERROR && XYFD_ISSET(fd, (fd_set *)pfds0))
+						j = 0;
+						i = count;
+						while (i)
 						{
-							do
+							i--;
+
+							pctx = (struct kkp_ctx *)ctxs[i];
+							if (pctx->states & KAKAPO_STATE_ASSIGN)
 							{
-								flag0 = 0;
+								fd = pctx->fd;
+								type = pctx->type;
 
-								sasize = 0;
+								flag1 = 0;
 
-								pointer = (void **)buffer;
+								errorcode = 0;
 
-								length = procedure(pkkp, &pointer, (void *)pctx, fd, type, KAKAPO_RECV, (void *)&sai6, &sasize, buffer, buffersize);
-								if (pointer != NULL)
+								// 超时也要接收数据, 没有想明白
+								if (value == 0 || value != SOCKET_ERROR && XYFD_ISSET(fd, (fd_set *)pfds0))
 								{
-									length = recv(fd, buffer, buffersize, 0);
-								}
+									flag0 = 0;
 
-								if (length > 0)
-								{
+									sasize = 0;
+
+									pointer = (void **)buffer;
+
+									length = procedure(pkkp, &pointer, (void *)pctx, fd, type, KAKAPO_RECV, (void *)&sai6, &sasize, buffer, buffersize);
 									if (pointer != NULL)
 									{
-										errorcode = procedure(pkkp, NULL, (void *)pctx, fd, type, KAKAPO_RECV, (void *)&sai6, &sasize, buffer, length);
+										length = recv(fd, buffer, buffersize, 0);
 									}
 
-									if (errorcode == 0)
+									if (length > 0)
 									{
-										flag0 = 1;
+										if (pointer != NULL)
+										{
+											errorcode = procedure(pkkp, NULL, (void *)pctx, fd, type, KAKAPO_RECV, (void *)&sai6, &sasize, buffer, length);
+										}
 
-										flag1 = 1;
+										if (errorcode == 0)
+										{
+											flag0 = 1;
+
+											flag1 = 1;
+										}
+									}
+									else
+									{
+										if (length == 0)
+										{
+											errorcode = KAKAPO_ERROR_FAILED;
+										}
+										else
+										{
+											// length == SOCKET_ERROR
+
+											errorcode = WSAGetLastError();
+											if (errorcode == WSAEWOULDBLOCK || errorcode == WSAEINTR)
+											{
+												errorcode = 0;
+											}
+										}
+									}
+
+									if (flag0)
+									{
+										j++;
+									}
+									else
+									{
+										pctx->states ^= KAKAPO_STATE_ASSIGN;
 									}
 								}
 								else
 								{
-									if (length == 0)
+									if (XYFD_ISSET(fd, (fd_set *)pfds2))
 									{
 										errorcode = KAKAPO_ERROR_FAILED;
 									}
 									else
 									{
-										// length == SOCKET_ERROR
+										pctx->states ^= KAKAPO_STATE_ASSIGN;
+									}
+								}
 
-										errorcode = WSAGetLastError();
-										if (errorcode == WSAEWOULDBLOCK || errorcode == WSAEINTR)
+								if (errorcode == 0)
+								{
+									if (value == 0)
+									{
+										if (flag1 == 0)
 										{
-											errorcode = 0;
+											errorcode = procedure(pkkp, NULL, (void *)pctx, fd, type, KAKAPO_TIMEOUT, NULL, NULL, NULL, seconds);
 										}
 									}
 								}
-							} while (flag0);
-						}
-						else
-						{
-							if (XYFD_ISSET(fd, (fd_set *)pfds2))
-							{
-								errorcode = KAKAPO_ERROR_FAILED;
-							}
-						}
 
-						if (errorcode == 0)
-						{
-							if (value == 0)
-							{
-								if (flag1 == 0)
+								if (errorcode)
 								{
-									errorcode = procedure(pkkp, NULL, (void *)pctx, fd, type, KAKAPO_TIMEOUT, NULL, NULL, NULL, seconds);
+									procedure(pkkp, NULL, (void *)pctx, fd, type, KAKAPO_CLOSE, NULL, NULL, NULL, errorcode);
+
+									kkp_remove(pbox, pctx, NULL);
+									closesocket(fd);
+
+									count--;
 								}
 							}
 						}
-
-						if (errorcode)
-						{
-							procedure(pkkp, NULL, (void *)pctx, fd, type, KAKAPO_CLOSE, NULL, NULL, NULL, errorcode);
-
-							kkp_remove(pbox, pctx, NULL);
-							closesocket(fd);
-
-							count--;
-						}
-					}
+					} while (j);
 					break;
 				}
 			}
